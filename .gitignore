@@ -1,0 +1,34 @@
+# GoLand configuration.
+.idea
+
+# VSCode Workspace
+gonb.code-workspace
+
+# Ignore Go workspace, this is particular to the developers machine.
+go.work
+
+# Spurious test notebook files and temporary checkpoints.
+.ipynb_checkpoints/
+jupyter_files/
+Untitled*.ipynb
+experimental.ipynb
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/gonb
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Dependency directories (remove the comment below to include it)
+vendor/
+
+# gonb/cache package cache directories, generated during testing.
+.gonb_cache

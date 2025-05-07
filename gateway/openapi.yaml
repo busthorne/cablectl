@@ -1,0 +1,548 @@
+openapi: 3.0.1
+info:
+  title: Jupyter Enterprise Gateway API
+  description: The API for the Jupyter Enterprise Gateway
+  contact:
+    name: Jupyter Project
+    url: https://jupyter.org
+  version: "6"
+servers:
+- url: /
+security:
+- tokenHeader: []
+- tokenParam: []
+paths:
+  /api:
+    get:
+      tags:
+      - api
+      summary: Get API info
+      responses:
+        "200":
+          description: Returns information about the API
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiInfo'
+  /api/swagger.yaml:
+    get:
+      tags:
+      - api
+      summary: Get API info
+      responses:
+        "200":
+          description: Returns a swagger specification in yaml
+          content: {}
+  /api/swagger.json:
+    get:
+      tags:
+      - api
+      summary: Get API info
+      responses:
+        "200":
+          description: Returns a swagger specification in json
+          content: {}
+  /api/kernelspecs:
+    get:
+      tags:
+      - kernelspecs
+      summary: Get kernel specs
+      parameters:
+      - name: user
+        in: query
+        description: "When present, kernelspec results will be filtered based on the\
+          \ configured authorization of specified value."
+        schema:
+          type: string
+      responses:
+        "200":
+          description: |
+            If no query parameter is specified, all kernel specs will be returned;
+            otherwise the result set is filtered based on the query parameter.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  default:
+                    type: string
+                    description: The name of the default kernel.
+                  kernelspecs:
+                    type: object
+                    additionalProperties:
+                      $ref: '#/components/schemas/KernelSpec'
+  /api/kernels:
+    get:
+      tags:
+      - kernels
+      summary: List the JSON data for all currently running kernels
+      responses:
+        "200":
+          description: List of running kernels
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Kernel'
+        "403":
+          description: |
+            This method is not accessible when `EnterpriseGatewayApp.list_kernels` is `False`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags:
+      - kernels
+      summary: Start a kernel and return the uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  description: Kernel spec name (defaults to default kernel spec for
+                    server)
+                env:
+                  type: object
+                  additionalProperties:
+                    type: string
+                  description: |
+                    A dictionary of environment variables and values to include in the
+                    kernel process - subject to filtering.
+        required: true
+      responses:
+        "201":
+          description: The metadata about the newly created kernel.
+          headers:
+            Location:
+              description: Model for started kernel
+              schema:
+                type: string
+                format: url
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Kernel'
+        "403":
+          description: The maximum number of kernels have been created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-codegen-request-body-name: start_kernel_body
+  /api/kernels/{kernel_id}:
+    get:
+      tags:
+      - kernels
+      summary: Get kernel information
+      parameters:
+      - name: kernel_id
+        in: path
+        description: kernel uuid
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          description: Information about the kernel
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Kernel'
+    delete:
+      tags:
+      - kernels
+      summary: Kill a kernel and delete the kernel id
+      parameters:
+      - name: kernel_id
+        in: path
+        description: kernel uuid
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "204":
+          description: Kernel deleted
+          content: {}
+  /api/kernels/{kernel_id}/channels:
+    get:
+      tags:
+      - channels
+      summary: Upgrades the connection to a websocket connection.
+      parameters:
+      - name: kernel_id
+        in: path
+        description: kernel uuid
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          description: The connection will be upgraded to a websocket.
+          content: {}
+  /kernels/{kernel_id}/interrupt:
+    post:
+      tags:
+      - kernels
+      summary: Interrupt a kernel
+      parameters:
+      - name: kernel_id
+        in: path
+        description: kernel uuid
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "204":
+          description: Kernel interrupted
+          content: {}
+  /kernels/{kernel_id}/restart:
+    post:
+      tags:
+      - kernels
+      summary: Restart a kernel
+      parameters:
+      - name: kernel_id
+        in: path
+        description: kernel uuid
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          description: Kernel interrupted
+          headers:
+            Location:
+              description: URL for kernel commands
+              schema:
+                type: string
+                format: url
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Kernel'
+  /api/sessions:
+    get:
+      tags:
+      - sessions
+      summary: List available sessions
+      responses:
+        "200":
+          description: List of current sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Session'
+        "403":
+          description: |
+            This method is not accessible when the kernel gateway
+            when the `list_kernels` option is `False`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      tags:
+      - sessions
+      summary: |
+        Create a new session, or return an existing session if a session
+        of the same name already exists.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Session'
+        required: false
+      responses:
+        "201":
+          description: Session created or returned
+          headers:
+            Location:
+              description: URL for session commands
+              schema:
+                type: string
+                format: url
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        "501":
+          description: Session not available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-codegen-request-body-name: session
+  /api/sessions/{session}:
+    get:
+      tags:
+      - sessions
+      summary: Get session
+      parameters:
+      - name: session
+        in: path
+        description: session uuid
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "200":
+          description: Session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+    delete:
+      tags:
+      - sessions
+      summary: Delete a session
+      parameters:
+      - name: session
+        in: path
+        description: session uuid
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        "204":
+          description: Session (and kernel) were deleted
+          content: {}
+        "410":
+          description: |
+            Kernel was deleted before the session, and the session
+            was *not* deleted
+          content: {}
+    patch:
+      tags:
+      - sessions
+      summary: This can be used to rename the session.
+      parameters:
+      - name: session
+        in: path
+        description: session uuid
+        required: true
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Session'
+        required: true
+      responses:
+        "200":
+          description: Session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        "400":
+          description: No data provided
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+      x-codegen-request-body-name: model
+components:
+  schemas:
+    Error:
+      type: object
+      properties:
+        reason:
+          type: string
+          description: The reason for the failure
+        message:
+          type: string
+          description: The message logged when the error occurred
+      description: An error response from the server
+    KernelSpec:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Unique name for kernel
+        KernelSpecFile:
+          $ref: '#/components/schemas/KernelSpecFile'
+        resources:
+          type: object
+          properties:
+            kernel.js:
+              type: string
+              description: path for kernel.js file
+              format: filename
+            kernel.css:
+              type: string
+              description: path for kernel.css file
+              format: filename
+            logo-*:
+              type: string
+              description: |
+                path for logo file.  Logo filenames are of the form `logo-widthxheight`
+              format: filename
+      description: Kernel spec (contents of kernel.json)
+    KernelSpecFile:
+      required:
+      - argv
+      - display_name
+      - language
+      type: object
+      properties:
+        language:
+          type: string
+          description: The programming language which this kernel runs. This will
+            be stored in notebook metadata.
+        argv:
+          type: array
+          description: |
+            A list of command line arguments used to start the kernel. The text `{connection_file}` in any
+            argument will be replaced with the path to the connection file.
+          items:
+            type: string
+        display_name:
+          type: string
+          description: |
+            The kernel's name as it should be displayed in the UI. Unlike the kernel name used in the API,
+            this can contain arbitrary unicode characters.
+        codemirror_mode:
+          type: string
+          description: |
+            Codemirror mode.  Can be a string *or* an valid Codemirror mode object.  This defaults to the
+            string from the `language` property.
+        env:
+          type: object
+          additionalProperties:
+            type: string
+          description: |
+            A dictionary of environment variables to set for the kernel. These will be added to the current
+            environment variables.
+        metadata:
+          type: object
+          additionalProperties: true
+          description: |
+            A free-form dictionary consisting of additional information about the kernel and its environment.
+        help_links:
+          type: array
+          description: Help items to be displayed in the help menu in the notebook
+            UI.
+          items:
+            required:
+            - text
+            - url
+            type: object
+            properties:
+              text:
+                type: string
+                description: menu item link text
+              url:
+                type: string
+                description: menu item link url
+                format: URL
+      description: Kernel spec json file
+    Kernel:
+      required:
+      - id
+      - name
+      type: object
+      properties:
+        id:
+          type: string
+          description: uuid of kernel
+          format: uuid
+        name:
+          type: string
+          description: kernel spec name
+        last_activity:
+          type: string
+          description: |
+            ISO 8601 timestamp for the last-seen activity on this kernel.
+            Use this in combination with execution_state == 'idle' to identify
+            which kernels have been idle since a given time.
+            Timestamps will be UTC, indicated 'Z' suffix.
+            Added in notebook server 5.0.
+        connections:
+          type: number
+          description: |
+            The number of active connections to this kernel.
+        execution_state:
+          type: string
+          description: |
+            Current execution state of the kernel (typically 'idle' or 'busy', but may be other values, such as 'starting').
+            Added in notebook server 5.0.
+      description: Kernel information
+    Session:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        path:
+          type: string
+          description: path to the session
+        name:
+          type: string
+          description: name of the session
+        type:
+          type: string
+          description: session type
+        kernel:
+          $ref: '#/components/schemas/Kernel'
+      description: A session
+    ApiInfo:
+      type: object
+      properties:
+        version:
+          type: string
+        gateway_version:
+          type: string
+      description: Information about the api
+  parameters:
+    kernel:
+      name: kernel_id
+      in: path
+      description: kernel uuid
+      required: true
+      schema:
+        type: string
+        format: uuid
+    session:
+      name: session
+      in: path
+      description: session uuid
+      required: true
+      schema:
+        type: string
+        format: uuid
+  securitySchemes:
+    tokenHeader:
+      type: apiKey
+      description: |
+        The authorization token to verify authorization. This is only needed
+        when `EnterpriseGatewayApp.auth_token` is set. This should take the
+        form of `token {value}` where `{value}` is the value of the token.
+        Alternatively, the token can be passed as a query parameter.
+      name: Authorization
+      in: header
+    tokenParam:
+      type: apiKey
+      description: |
+        The authorization token to verify authorization. This is only needed
+        when `EnterpriseGatewayApp.auth_token` is set. This should take the
+        form of `token={value}` where `{value}` is the value of the token.
+        Alternatively, the token can be passed as a header.
+      name: token
+      in: query
+x-original-swagger-version: "2.0"
