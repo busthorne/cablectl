@@ -3,24 +3,21 @@ package cablectl
 import (
 	"context"
 	"net/url"
+	"os"
 	"testing"
 	"time"
-)
-
-const (
-	testGateway = "http://192.168.65.4:8888"
 )
 
 func TestHelloWorld(t *testing.T) {
 	ctx := context.Background()
 
-	gwu, err := url.Parse(testGateway)
+	gwu, err := url.Parse(os.Getenv("GATEWAY_URL"))
 	if err != nil {
 		t.Fatalf("Failed to parse gateway URL: %v", err)
 	}
 
 	k := &Kernel{
-		Name:      "python",
+		Name:      os.Getenv("GATEWAY_KERNEL"),
 		URL:       gwu,
 		KeepAlive: 30 * time.Second,
 	}
@@ -48,4 +45,9 @@ func TestHelloWorld(t *testing.T) {
 		}
 	}
 	t.Log("round", c.ExecutionCount)
+
+	if err := k.Shutdown(ctx); err != nil {
+		t.Fatalf("Failed to shutdown: %v", err)
+	}
+	t.Log("Kernel shutdown.")
 }

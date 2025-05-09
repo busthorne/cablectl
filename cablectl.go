@@ -13,170 +13,125 @@ import (
 	"time"
 
 	"github.com/busthorne/cablectl/gateway"
-	"github.com/crackcomm/go-jupyter/jupyter"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
-func New(ctx context.Context, kernel *Kernel) error {
+// New attaches a websocket connection to a new, or existing, kernel.
+func New(ctx context.Context, k *Kernel) error {
 	switch {
-	case kernel.URL.String() == "":
-		return fmt.Errorf("kernel gateway url is required")
-	case kernel.Name == "":
+	case k.Name == "":
 		return fmt.Errorf("kernel name is required")
+	case k.Client == nil:
+		if k.URL.String() == "" {
+			return fmt.Errorf("kernel gateway url is required")
+		}
+		gw, err := gateway.NewClient(k.URL.String())
+		if err != nil {
+			return fmt.Errorf("failed to create gateway client: %w", err)
+		}
+		k.Client = gw
 	}
 
-	gw, err := gateway.NewClient(kernel.URL.String())
-	if err != nil {
-		return fmt.Errorf("failed to create gateway client: %w", err)
-	}
-	if kernel.ID == uuid.Nil {
-		resp, err := gw.PostApiKernels(ctx, gateway.PostApiKernelsJSONRequestBody{
-			Name: &kernel.Name,
+	if k.ID == uuid.Nil {
+		resp, err := k.Client.PostApiKernels(ctx, gateway.PostApiKernelsJSONRequestBody{
+			Name: &k.Name,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create kernel: %w", err)
 		}
-		var k gateway.Kernel
-		if err := json.NewDecoder(resp.Body).Decode(&k); err != nil {
+		var kl gateway.Kernel
+		if err := json.NewDecoder(resp.Body).Decode(&kl); err != nil {
 			return fmt.Errorf("failed to unmarshal kernel: %w", err)
 		}
 		defer resp.Body.Close()
 
-		kernel.ID = k.Id
-		if state := k.ExecutionState; state != nil {
-			kernel.Status = *state
+		k.ID = kl.Id
+		if state := kl.ExecutionState; state != nil {
+			k.Status = *state
 		}
 	}
 
 	dialer := websocket.Dialer{}
 	// TODO: URL without schema
 	ws := fmt.Sprintf("ws://%s/api/kernels/%s/channels",
-		kernel.URL.Host,
-		kernel.ID)
+		k.URL.Host,
+		k.ID)
 	conn, _, err := dialer.Dial(ws, http.Header{})
 	if err != nil {
 		return fmt.Errorf("failed to dial kernel: %w", err)
 	}
-	kernel.conn = conn
+	k.conn = conn
+	ctx, k.cancel = context.WithCancel(ctx)
 
-	if kernel.in == nil {
-		kernel.in = make(chan string, 1)
+	if k.in == nil {
+		k.in = make(chan string, 1)
 	}
-	if kernel.out == nil {
-		kernel.out = make(chan *Content, 1)
+	if k.out == nil {
+		k.out = make(chan *Content, 1)
 	}
-	if kernel.KeepAlive == 0 {
+
+	go k.read(ctx)
+
+	if k.KeepAlive == 0 {
 		return nil
 	}
-
 	// keepalive
 	go func() {
-		ticker := time.NewTicker(kernel.KeepAlive)
+		ticker := time.NewTicker(k.KeepAlive)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if kernel.conn == nil {
+				if k.conn == nil {
 					return
 				}
-				err := kernel.conn.WriteMessage(websocket.PingMessage, nil)
+				err := k.conn.WriteMessage(websocket.PingMessage, nil)
 				if err != nil {
-					kernel.out <- &Content{
+					k.out <- &Content{
 						Error: &Error{err: err},
 					}
-					kernel.Close()
+					k.Close()
 					return
 				}
 			}
 		}
 	}()
-	go kernel.read(ctx)
 	return nil
 }
 
-func (k *Kernel) read(ctx context.Context) error {
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-			var m Message
-			if err := k.conn.ReadJSON(&m); err != nil {
-				return fmt.Errorf("failed to read message: %w", err)
-			}
-			switch m.Type {
-			case "status":
-				var status jupyter.StatusMessage
-				if err := m.Unmarshal(&status); err != nil {
-					return fmt.Errorf("failed to unmarshal status: %w", err)
-				}
-				k.Status = string(status.ExecutionState)
-			case "stream", "display_data", "execute_reply":
-				var c Content
-				if err := m.Unmarshal(&c); err != nil {
-					return fmt.Errorf("failed to unmarshal stream: %w", err)
-				}
-				if h := m.ParentHeader; h != nil {
-					c.Message = uuid.MustParse(h.ID)
-				}
-				k.out <- &c
-			}
-		}
-	}
-}
-
+// Listen returns a combined stdout/stderr stream.
 func (k *Kernel) Listen() <-chan *Content {
 	return k.out
 }
 
-func (k *Kernel) Submit(ctx context.Context, code string) (uuid.UUID, error) {
-	if k.Status == "busy" {
-		client, err := gateway.NewClient(k.URL.String())
-		if err != nil {
-			return uuid.Nil, fmt.Errorf("failed to create gateway client: %w", err)
-		}
-		resp, err := client.PostKernelsKernelIdInterrupt(ctx, k.ID)
-		if err != nil {
-			return uuid.Nil, fmt.Errorf("failed to interrupt kernel: %w", err)
-		}
-		defer resp.Body.Close()
-	}
-
-	c := map[string]any{
-		"code":             code,
-		"silent":           false,
-		"store_history":    true,
-		"user_expressions": map[string]any{},
-		"allow_stdin":      false,
-	}
-	b, err := json.Marshal(c)
+// Interrupt stops the current kernel execution, & makes way for a new one.
+func (k *Kernel) Interrupt(ctx context.Context) error {
+	resp, err := k.Client.PostKernelsKernelIdInterrupt(ctx, k.ID)
 	if err != nil {
-		return uuid.Nil, fmt.Errorf("failed to marshal execute request: %w", err)
+		return fmt.Errorf("failed to interrupt: %w", err)
 	}
-	id := uuid.New()
-	return id, k.conn.WriteJSON(&Message{
-		Header: &Header{
-			Type:     "execute_request",
-			ID:       id.String(),
-			Username: k.User,
-			Session:  k.Session,
-			Version:  "5.0",
-		},
-		ParentHeader: &Header{},
-		Channel:      "shell",
-		Content:      b,
-		Metadata:     map[string]any{},
-		Buffers:      []any{},
-	})
+	return resp.Body.Close()
 }
 
+// Shutdown kills the kernel, & releases the resources associated with it.
+func (k *Kernel) Shutdown(ctx context.Context) error {
+	resp, err := k.Client.DeleteApiKernelsKernelId(ctx, k.ID)
+	if err != nil {
+		return fmt.Errorf("failed to shutdown: %w", err)
+	}
+	defer resp.Body.Close()
+	k.ID = uuid.Nil
+	return k.Close()
+}
+
+// Execute
 func (k *Kernel) Execute(ctx context.Context, code string) (chan *Content, error) {
 	ch := make(chan *Content, 1)
 
-	id, err := k.Submit(ctx, code)
+	id, err := k.submit(ctx, code)
 	if err != nil {
 		return nil, err
 	}
@@ -192,4 +147,16 @@ func (k *Kernel) Execute(ctx context.Context, code string) (chan *Content, error
 		}
 	}()
 	return ch, nil
+}
+
+func (k *Kernel) Close() (err error) {
+	if k.conn == nil {
+		return
+	}
+	err = k.conn.Close()
+	k.conn = nil
+	close(k.in)
+	close(k.out)
+	k.cancel()
+	return
 }
