@@ -28,15 +28,24 @@ func TestHelloWorld(t *testing.T) {
 		t.Fatalf("Failed to create kernel: %v", err)
 	}
 
-	c, err := k.Execute(ctx, `x = 42`)
+	var c *Content
+
+	ch, err := k.Execute(ctx, `x = 42`)
 	if err != nil {
 		t.Fatalf("Failed to execute: %v", err)
 	}
+	for c = range ch {
+		continue
+	}
 	t.Log("round", c.ExecutionCount)
-	c, err = k.Execute(ctx, `print(f'Hello, {x} pirates!')`)
+	ch, err = k.Execute(ctx, `print(f'Hello, {x} pirates!')`)
 	if err != nil {
 		t.Fatalf("Failed to execute: %v", err)
 	}
+	for c = range ch {
+		if c.Text != "" {
+			t.Log(c.Text)
+		}
+	}
 	t.Log("round", c.ExecutionCount)
-	t.Log(c.Text)
 }

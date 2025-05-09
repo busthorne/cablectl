@@ -173,19 +173,23 @@ func (k *Kernel) Submit(ctx context.Context, code string) (uuid.UUID, error) {
 	})
 }
 
-func (k *Kernel) Execute(ctx context.Context, code string) (*Content, error) {
+func (k *Kernel) Execute(ctx context.Context, code string) (chan *Content, error) {
+	ch := make(chan *Content, 1)
+
 	id, err := k.Submit(ctx, code)
 	if err != nil {
 		return nil, err
 	}
-
-	for c := range k.out {
-		if c.Message == id {
-			if c.Error != nil {
-				return nil, c.Error
+	go func() {
+		for c := range k.out {
+			if c.Message == id {
+				ch <- c
+				if c.Error != nil || c.Status != "" {
+					close(ch)
+					return
+				}
 			}
-			return c, nil
 		}
-	}
-	return nil, fmt.Errorf("bizarre")
+	}()
+	return ch, nil
 }
