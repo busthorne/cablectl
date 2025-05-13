@@ -1,5 +1,5 @@
-package: gateway
-output: gateway.gen.go
+package: api
+output: api.gen.go
 generate:
   models: true
   client: true

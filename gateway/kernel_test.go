@@ -1,4 +1,4 @@
-package cablectl
+package gateway
 
 import (
 	"context"
@@ -11,17 +11,20 @@ import (
 func TestHelloWorld(t *testing.T) {
 	ctx := context.Background()
 
-	gwu, err := url.Parse(os.Getenv("GATEWAY_URL"))
+	gatewayURL, err := url.Parse(os.Getenv("GATEWAY_URL"))
 	if err != nil {
 		t.Fatalf("Failed to parse gateway URL: %v", err)
 	}
 
 	k := &Kernel{
 		Name:      os.Getenv("GATEWAY_KERNEL"),
-		URL:       gwu,
+		URL:       gatewayURL,
 		KeepAlive: 30 * time.Second,
 	}
-	if err := New(ctx, k); err != nil {
+	if k.Name == "" {
+		k.Name = "python3"
+	}
+	if err := NewKernel(ctx, k); err != nil {
 		t.Fatalf("Failed to create kernel: %v", err)
 	}
 

@@ -1,4 +1,4 @@
-package cablectl
+package gateway
 
 import (
 	"encoding/json"
