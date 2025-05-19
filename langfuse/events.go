@@ -7,7 +7,7 @@ import (
 )
 
 type Trace struct {
-	Id          uuid.UUID `json:"id"`
+	Id          string    `json:"id"`
 	Name        string    `json:"name"`
 	SessionId   string    `json:"sessionId,omitempty"`
 	UserId      string    `json:"userId,omitempty"`
@@ -24,7 +24,7 @@ type Trace struct {
 	client *Client `json:"-"`
 }
 
-func (t *Trace) EventId() string      { return t.Id.String() }
+func (t *Trace) EventId() string      { return t.Id }
 func (t *Trace) EventType() EventType { return TRACE_CREATE }
 func (t *Trace) EventTime() time.Time { return t.Timestamp }
 
@@ -37,22 +37,15 @@ func (t *Trace) Span(s *Span) *Span {
 	}
 
 	s.client = t.client
-	s.TraceId = t.Id.String()
-	if s.Id == uuid.Nil {
-		s.Id = uuid.New()
+	s.TraceId = t.Id
+	if s.Id == "" {
+		s.Id = uuid.New().String()
 	}
 	if s.StartedAt.IsZero() {
 		s.StartedAt = time.Now().UTC()
 	}
-	if s.Environment == "" && t.Environment != "" {
-		s.Environment = t.Environment
-	}
-	if s.Version == "" && t.Version != "" {
-		s.Version = t.Version
-	}
 
-	eventCopy := *s
-	t.client.batch(&eventCopy)
+	t.client.Ingest(s)
 	return s
 }
 
@@ -64,28 +57,23 @@ func (t *Trace) Event(e *Event) *Event {
 		panic("langfuse: Trace must be associated with a client before creating an Event")
 	}
 
-	e.client = t.client
-	e.TraceId = t.Id.String()
-	if e.Id == uuid.Nil {
-		e.Id = uuid.New()
+	e.TraceId = t.Id
+	if e.Id == "" {
+		e.Id = uuid.New().String()
 	}
 	if e.StartTime.IsZero() {
 		e.StartTime = time.Now().UTC()
-	}
-	if e.Environment == "" && t.Environment != "" {
-		e.Environment = t.Environment
 	}
 	if e.Version == "" && t.Version != "" {
 		e.Version = t.Version
 	}
 
-	eventCopy := *e
-	t.client.batch(&eventCopy)
+	t.client.Ingest(e)
 	return e
 }
 
 type Span struct {
-	Id                  uuid.UUID  `json:"id"`
+	Id                  string     `json:"id"`
 	TraceId             string     `json:"traceId,omitempty"`
 	Name                string     `json:"name,omitempty"`
 	StartedAt           time.Time  `json:"startTime"`
@@ -102,20 +90,19 @@ type Span struct {
 	client *Client `json:"-"`
 }
 
-func (s *Span) EventId() string { return s.Id.String() }
+func (s *Span) EventId() string { return s.Id }
 func (s *Span) EventType() EventType {
 	if s.EndedAt == nil {
 		return SPAN_CREATE
 	}
-	return SPAN_UPDATE // If EndedAt is set, it's an update type
+	return SPAN_UPDATE
 }
 func (s *Span) EventTime() time.Time { return s.StartedAt }
 
 func (s *Span) End() {
-	if s.EndedAt == nil {
-		now := time.Now().UTC()
-		s.EndedAt = &now
-	}
+	now := time.Now().UTC()
+	s.EndedAt = &now
+	s.client.Ingest(s)
 }
 
 func (s *Span) Generation(g *Generation) *Generation {
@@ -126,24 +113,19 @@ func (s *Span) Generation(g *Generation) *Generation {
 		panic("langfuse: Span must be associated with a client before creating a Generation")
 	}
 
-	g.client = s.client
 	g.TraceId = s.TraceId
-	g.ParentObservationId = s.Id.String()
-	if g.Id == uuid.Nil {
-		g.Id = uuid.New()
+	g.ParentObservationId = s.Id
+	if g.Id == "" {
+		g.Id = uuid.New().String()
 	}
 	if g.StartedAt.IsZero() {
 		g.StartedAt = time.Now().UTC()
-	}
-	if g.Environment == "" && s.Environment != "" {
-		g.Environment = s.Environment
 	}
 	if g.Version == "" && s.Version != "" {
 		g.Version = s.Version
 	}
 
-	eventCopy := *g
-	s.client.batch(&eventCopy)
+	s.client.Ingest(g)
 	return g
 }
 
@@ -157,22 +139,15 @@ func (s *Span) Span(childSpan *Span) *Span {
 
 	childSpan.client = s.client
 	childSpan.TraceId = s.TraceId
-	childSpan.ParentObservationId = s.Id.String()
-	if childSpan.Id == uuid.Nil {
-		childSpan.Id = uuid.New()
+	childSpan.ParentObservationId = s.Id
+	if childSpan.Id == "" {
+		childSpan.Id = uuid.New().String()
 	}
 	if childSpan.StartedAt.IsZero() {
 		childSpan.StartedAt = time.Now().UTC()
 	}
-	if childSpan.Environment == "" && s.Environment != "" {
-		childSpan.Environment = s.Environment
-	}
-	if childSpan.Version == "" && s.Version != "" {
-		childSpan.Version = s.Version
-	}
 
-	eventCopy := *childSpan
-	s.client.batch(&eventCopy)
+	s.client.Ingest(childSpan)
 	return childSpan
 }
 
@@ -184,29 +159,21 @@ func (s *Span) Event(e *Event) *Event {
 		panic("langfuse: Span must be associated with a client before creating an Event")
 	}
 
-	e.client = s.client
 	e.TraceId = s.TraceId
-	e.ParentObservationId = s.Id.String()
-	if e.Id == uuid.Nil {
-		e.Id = uuid.New()
+	e.ParentObservationId = s.Id
+	if e.Id == "" {
+		e.Id = uuid.New().String()
 	}
 	if e.StartTime.IsZero() {
 		e.StartTime = time.Now().UTC()
 	}
-	if e.Environment == "" && s.Environment != "" {
-		e.Environment = s.Environment
-	}
-	if e.Version == "" && s.Version != "" {
-		e.Version = s.Version
-	}
 
-	eventCopy := *e
-	s.client.batch(&eventCopy)
+	s.client.Ingest(e)
 	return e
 }
 
 type Generation struct {
-	Id                  uuid.UUID          `json:"id"`
+	Id                  string             `json:"id"`
 	TraceId             string             `json:"traceId,omitempty"`
 	Name                string             `json:"name,omitempty"`
 	StartedAt           time.Time          `json:"startTime"`
@@ -227,11 +194,9 @@ type Generation struct {
 	ParentObservationId string             `json:"parentObservationId,omitempty"`
 	Version             string             `json:"version,omitempty"`
 	Environment         string             `json:"environment,omitempty"`
-
-	client *Client `json:"-"`
 }
 
-func (g *Generation) EventId() string      { return g.Id.String() }
+func (g *Generation) EventId() string      { return g.Id }
 func (g *Generation) EventType() EventType { return GENERATION_CREATE }
 func (g *Generation) EventTime() time.Time { return g.StartedAt }
 
@@ -246,7 +211,7 @@ func (g *Generation) End() {
 }
 
 type Event struct {
-	Id                  uuid.UUID `json:"id"`
+	Id                  string    `json:"id"`
 	TraceId             string    `json:"traceId,omitempty"`
 	Name                string    `json:"name,omitempty"`
 	StartTime           time.Time `json:"startTime"`
@@ -258,10 +223,8 @@ type Event struct {
 	ParentObservationId string    `json:"parentObservationId,omitempty"`
 	Version             string    `json:"version,omitempty"`
 	Environment         string    `json:"environment,omitempty"`
-
-	client *Client `json:"-"`
 }
 
-func (e *Event) EventId() string      { return e.Id.String() }
+func (e *Event) EventId() string      { return e.Id }
 func (e *Event) EventType() EventType { return EVENT_CREATE }
 func (e *Event) EventTime() time.Time { return e.StartTime }

@@ -13,9 +13,14 @@ import (
 	"time"
 
 	"github.com/busthorne/cablectl/langfuse/api"
-	// "github.com/google/uuid" // No longer directly used in this file by client methods
+	"github.com/google/uuid"
 )
 
+// EventType corresponds to various events supported by Langfuse.
+//
+// Events are distinct from observations: for example, a single
+// observation may appear as multiple events: first, when it is
+// created, and then when it is updated.
 type EventType string
 
 const (
@@ -31,21 +36,37 @@ const (
 	OBSERVATION_UPDATE EventType = "observation-update"
 )
 
+// Ingestible represents an observation, or update thereof, that Langfuse will
+// ingest using Batched ingestion API. The schema is a bit awkward; to make it
+// more ergonomic, the observation types (Span, Generation, Event) themselves
+// will determine whether they are created or updated.
+//
+// For example, calling End() on a span will set its EndedAt time, and ingest
+// an update. Therefore, if defer sequence is client.Flush, span.End, then
+// the span will first be ingested as not having endTime, then again as an
+// update with endTime set, and finally flushed.
+//
+// https://api.reference.langfuse.com/#tag/ingestion/POST/api/public/ingestion
 type Ingestible interface {
 	EventId() string
 	EventType() EventType
 	EventTime() time.Time
 }
 
+// Client provides ergonomic methods for ingesting observations and other APIs.
 type Client struct {
 	API *api.Client
 
 	ingestibles []Ingestible
 	mu          sync.Mutex
-	// successfullyCreatedSpanIDs map[string]bool // Removed as per user changes
-	// release, environment, etc. also removed from Client struct as per user changes
 }
 
+// ClientOptions are the determining the API line for this package.
+//
+// The client will inherit the provided HTTP client, or otherwise use
+// sane defaults for transport, dialer, and timeouts. If you wish to
+// control these variables, you absolutely should provide your own
+// client.
 type ClientOptions struct {
 	Host       string
 	PrivateKey string
@@ -54,6 +75,9 @@ type ClientOptions struct {
 	HTTPClient *http.Client
 }
 
+// New creates a client from code-generated API client implementation.
+//
+// Note: the `API` field takes care of Basic Auth.
 func New(opts *ClientOptions) (*Client, error) {
 	const (
 		cloudHost = "https://cloud.langfuse.com"
@@ -93,13 +117,12 @@ func New(opts *ClientOptions) (*Client, error) {
 		}
 	}
 
+	b := []byte(opts.PublicKey + ":" + opts.PrivateKey)
+	h := "Basic " + base64.StdEncoding.EncodeToString(b)
 	basicAuth := func(ctx context.Context, req *http.Request) error {
-		b := []byte(opts.PublicKey + ":" + opts.PrivateKey)
-		h := "Basic " + base64.StdEncoding.EncodeToString(b)
 		req.Header.Set("Authorization", h)
 		return nil
 	}
-	// User changed apiClient back to api
 	api, err := api.NewClient(opts.Host,
 		api.WithBaseURL(opts.Host),
 		api.WithRequestEditorFn(basicAuth))
@@ -109,116 +132,112 @@ func New(opts *ClientOptions) (*Client, error) {
 
 	client := &Client{
 		API:         api,
-		ingestibles: make([]Ingestible, 0), // Initialize ingestibles
-		mu:          sync.Mutex{},          // Initialize mutex
+		ingestibles: make([]Ingestible, 0, 64),
+		mu:          sync.Mutex{},
 	}
 	return client, nil
 }
 
-// New lowercase batch method to add a single event to the buffer
-func (c *Client) batch(event Ingestible) {
+// Ingest adds an ingestible to the client's buffer, after populating it.
+func (c *Client) Ingest(event Ingestible) {
+	c.Populate(event)
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.ingestibles = append(c.ingestibles, event)
+	c.mu.Unlock()
 }
 
-// Uppercase Batch method as reinstated by user
-func (c *Client) Batch(ctx context.Context, events []Ingestible) (*api.IngestionResponse, error) {
+// Populate populates the traces and spans with the client.
+//
+// You will typically use this on spans after unmarshalling them from
+// the database metadata column, or for inputs that didn't originate
+// from the client directly.
+func (c *Client) Populate(event Ingestible) {
+	switch e := event.(type) {
+	case *Trace:
+		e.client = c
+	case *Span:
+		e.client = c
+	}
+}
+
+// Batch submits a series of ingestibles to the upstream API.
+func (c *Client) Batch(ctx context.Context, events []Ingestible) error {
 	bodies := make([]map[string]any, len(events))
 	for i := range events {
-		eventType := events[i].EventType()
-		// If it's a Span, client needs to decide if it's CREATE or UPDATE.
-		// This logic was removed by user from Client struct (successfullyCreatedSpanIDs).
-		// Reverting to use the EventType() directly from the span, which is based on EndedAt.
-		// For a more robust CREATE vs UPDATE, state would need to be tracked here or passed.
-		// Given current constraints, Span.EventType() is what we have.
-
 		bodies[i] = map[string]any{
 			"id":        events[i].EventId(),
-			"type":      eventType, // Using event's own determination
+			"type":      events[i].EventType(),
 			"timestamp": events[i].EventTime(),
 			"body":      events[i],
 		}
 	}
-	batchPayload := map[string]any{"batch": bodies} // Changed from batch to batchPayload for clarity
+
 	var b bytes.Buffer
-	if err := json.NewEncoder(&b).Encode(batchPayload); err != nil {
-		return nil, fmt.Errorf("langfuse: batch encode: %w", err)
+	err := json.NewEncoder(&b).Encode(map[string]any{"batch": bodies})
+	if err != nil {
+		return fmt.Errorf("langfuse: batch encode: %w", err)
 	}
 
 	resp, err := c.API.IngestionBatchWithBody(ctx, "application/json", &b)
 	if err != nil {
-		return nil, fmt.Errorf("langfuse: batch ingest: %w", err)
+		return fmt.Errorf("langfuse: batch ingest: %w", err)
 	}
 	defer resp.Body.Close()
 
 	switch resp.StatusCode {
-	case 200, 201: // Added 201 for created
-		// Potentially decode success response if needed, but often not for 200/201 batch
-		return nil, nil
+	case 200, 201:
+		return nil
 	case 207:
-		ing := &api.IngestionResponse{}
-		if err := json.NewDecoder(resp.Body).Decode(ing); err != nil {
-			return nil, fmt.Errorf("langfuse: batch ingest decode (207): %w", err)
+		var ing api.IngestionResponse
+		if err := json.NewDecoder(resp.Body).Decode(&ing); err != nil {
+			return fmt.Errorf("langfuse: batch ingest decode: %w", err)
 		}
-		// The IngestionResponse itself can be part of the error or handled by caller
-		// For now, returning it along with a generic error message.
-		return ing, fmt.Errorf("langfuse: %d events failed during batch ingestion", len(ing.Errors))
+		if len(ing.Errors) > 0 {
+			return &BatchError{Errors: ing.Errors}
+		}
+		return nil
 	default:
-		return nil, fmt.Errorf("langfuse: batch ingest failed with status: %s", resp.Status)
+		return fmt.Errorf("langfuse: batch ingest failed with status: %s", resp.Status)
 	}
 }
 
-// New Flush method
+// Trace populates the provided trace, ingests and returns it.
+func (c *Client) Trace(t *Trace) *Trace {
+	t.client = c
+
+	if t.Id == "" {
+		t.Id = uuid.New().String()
+	}
+	if t.Timestamp.IsZero() {
+		t.Timestamp = time.Now().UTC()
+	}
+	c.Ingest(t)
+	return t
+}
+
+// Flush will batch all ingestibles remaining in the client's buffer.
+//
+// You would typically `defer client.Flush()`.
 func (c *Client) Flush(ctx context.Context) error {
-	c.mu.Lock()
 	if len(c.ingestibles) == 0 {
-		c.mu.Unlock()
 		return nil
 	}
 
+	c.mu.Lock()
 	eventsToFlush := make([]Ingestible, len(c.ingestibles))
 	copy(eventsToFlush, c.ingestibles)
-	c.ingestibles = make([]Ingestible, 0) // Clear the original slice
+	c.ingestibles = make([]Ingestible, 0, len(eventsToFlush))
+	c.mu.Unlock()
 
-	c.mu.Unlock() // Unlock before calling Batch, as Batch might be long-running
-
-	// Call the uppercase Batch method
-	ingestionResponse, err := c.Batch(ctx, eventsToFlush)
-
-	if err != nil {
-		// If Batch itself returns an error, we need to decide if we re-queue eventsToFlush.
-		// The current Batch implementation doesn't distinguish between recoverable/non-recoverable errors for re-queuing.
-		// If ingestionResponse is not nil, it means it was a 207, and Batch already returned an error for it.
-		if ingestionResponse != nil && len(ingestionResponse.Errors) > 0 {
-			// This is a 207 error, already has details. We need to re-queue only the failed items.
-			failedEventIDs := make(map[string]bool)
-			for _, anError := range ingestionResponse.Errors {
-				if anError.Id != "" {
-					failedEventIDs[anError.Id] = true
-				}
-			}
-
-			reQueuedEvents := make([]Ingestible, 0)
-			for _, event := range eventsToFlush {
-				if failedEventIDs[event.EventId()] {
-					reQueuedEvents = append(reQueuedEvents, event)
-				}
-			}
-			if len(reQueuedEvents) > 0 {
-				c.mu.Lock()
-				c.ingestibles = append(reQueuedEvents, c.ingestibles...) // Prepend to preserve order of new items
-				c.mu.Unlock()
-			}
-			return err // Return the original error from Batch for 207
-		}
-		// For other errors from Batch (e.g. network, non-207 status), re-queue all events that were attempted.
+	switch err := c.Batch(ctx, eventsToFlush); {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrBatchFailed):
+		return err
+	default:
 		c.mu.Lock()
-		c.ingestibles = append(eventsToFlush, c.ingestibles...) // Prepend to preserve order
+		c.ingestibles = append(eventsToFlush, c.ingestibles...) // preserve order
 		c.mu.Unlock()
-		return err // Return the error from Batch
+		return err
 	}
-
-	// If err is nil, it means Batch was successful (200/201)
-	return nil
 }
